@@ -90,26 +90,33 @@ GEMINI_API_KEY=your-gemini-key-here
 - Tavily free tier: [tavily.com](https://tavily.com) — 1,000 searches/month
 - Gemini API key: [aistudio.google.com](https://aistudio.google.com) — free tier available
 
+After `pip install -e .`, the following commands are available directly in your shell:
+
+| Command | Equivalent |
+|---|---|
+| `research-agent "..."` | `python -m research_agent.cli "..."` |
+| `research-agent-eval` | `python -m research_agent.evaluate` |
+
 ## Usage
 
 ```bash
 # Ask any research question
-python -m research_agent.cli "What are the risks of AI regulation in the EU?"
+research-agent "What are the risks of AI regulation in the EU?"
 
-# Multi-part question
-python -m research_agent.cli "Compare the EV markets in Indonesia, Thailand, and Vietnam. Which should an EV charging startup enter first?"
+# Multi-part comparison question
+research-agent "Compare the EV markets in Indonesia, Thailand, and Vietnam. Which should an EV charging startup enter first?"
 
 # Clear episodic memory before a fresh session
-python -m research_agent.cli --reset-memory "What is the current state of quantum computing?"
+research-agent --reset-memory "What is the current state of quantum computing?"
 
 # Start an interactive multi-turn session (memory persists between questions)
-python -m research_agent.cli --interactive
+research-agent --interactive
 
 # See example questions
-python -m research_agent.cli --examples
+research-agent --examples
 
 # Run evaluation across all example questions
-python -m research_agent.evaluate
+research-agent-eval
 ```
 
 ## Example Output
@@ -168,6 +175,8 @@ model: str = "models/gemini-2.5-flash"
 These can be overridden by passing a custom `AgentConfig` to `ResearchAgent`.
 
 ## Running Tests
+
+28 unit tests, no real API calls — all LLM and search calls are mocked.
 
 ```bash
 python -m unittest discover -s tests

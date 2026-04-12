@@ -14,12 +14,12 @@ from .planner import extract_terms, split_question
 from .search import search_web
 from .summarizer import summarize_chunk
 
-# Memory budget tiers based on question novelty
-_BUDGET_TIERS: dict[str, tuple[int, int]] = {
-    # query_type  -> (memory_tokens, context_tokens)
-    "new_topic":  (200,  1600),
-    "default":    (600,  1200),
-    "follow_up":  (900,   900),
+# Memory token budget per novelty tier.
+# Context gets whatever remains from max_context_tokens after memory is subtracted.
+_MEMORY_BUDGET: dict[str, int] = {
+    "new_topic": 200,   # fresh topic — maximise fresh evidence
+    "default":   600,   # some overlap — balanced split
+    "follow_up": 900,   # continuing a thread — weight prior context heavily
 }
 
 
@@ -39,7 +39,7 @@ class ResearchAgent:
         # Classify the question to determine budget split
         raw_memory = self.memory.load_recent(self.config.max_memory_tokens)
         query_type = _classify_question(question, raw_memory)
-        memory_budget, _ = _BUDGET_TIERS[query_type]
+        memory_budget = _MEMORY_BUDGET[query_type]
 
         # Re-load memory with the dynamic budget
         memory_used = self.memory.load_recent(memory_budget)

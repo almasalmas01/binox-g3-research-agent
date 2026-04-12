@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -20,7 +21,7 @@ class ResearchAgent:
         self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
     def answer(self, question: str) -> QueryResult:
-        subquestions = split_question(question)
+        subquestions = self._decompose_question(question)
         memory_used = self.memory.load_recent(self.config.max_memory_tokens)
 
         retrieved = self._search_unique(subquestions)
@@ -38,6 +39,35 @@ class ResearchAgent:
             context_tokens_used=context_tokens_used,
             answer=answer,
         )
+
+    def _decompose_question(self, question: str) -> list[str]:
+        prompt = f"""Break the following research question into 2-4 focused sub-questions suitable for web search.
+Each sub-question should be a complete, standalone search query.
+Return ONLY a JSON array of strings, nothing else.
+
+Example input: "What are the risks of EVs in Asia and how does Thailand compare to Vietnam?"
+Example output: ["EV risks Southeast Asia", "Thailand EV market overview", "Vietnam EV market overview"]
+
+Question: {question}"""
+
+        try:
+            response = self.client.models.generate_content(
+                model="models/gemini-2.5-flash",
+                contents=prompt,
+            )
+            text = response.text.strip()
+            # Strip markdown code fences if present
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            subquestions = json.loads(text.strip())
+            if isinstance(subquestions, list) and all(isinstance(q, str) for q in subquestions):
+                return subquestions[:4]
+        except Exception as exc:
+            print(f"[planner] LLM decomposition failed, falling back to regex: {exc}")
+
+        return split_question(question)
 
     def _search_unique(self, subquestions: list[str]) -> list[RetrievedChunk]:
         seen_ids: set[str] = set()

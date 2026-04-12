@@ -26,7 +26,7 @@ class ResearchAgent:
 
         retrieved = self._search_unique(subquestions)
         compressed_context, context_tokens_used = self._compress_with_budget(retrieved, memory_used)
-        answer = self._synthesize(question, subquestions, compressed_context, memory_used)
+        answer = self._synthesize(question, subquestions, compressed_context, memory_used, retrieved)
 
         first_line = answer.splitlines()[0] if answer.strip() else question
         self.memory.append(question, first_line)
@@ -103,14 +103,29 @@ Question: {question}"""
         subquestions: list[str],
         compressed_context: list[str],
         memory_used: list[str],
+        retrieved: list[RetrievedChunk],
     ) -> str:
         context_block = "\n".join(f"- {item}" for item in compressed_context) or "- No supporting context was retrieved."
         memory_block = "\n".join(f"- {item}" for item in memory_used) or "- No past memory loaded."
+
+        # Build a deduplicated numbered source list for citation
+        seen: set[str] = set()
+        sources: list[tuple[int, str, str]] = []
+        for result in retrieved:
+            url = result.chunk.source
+            if url not in seen:
+                seen.add(url)
+                sources.append((len(sources) + 1, result.chunk.title, url))
+
+        source_list = "\n".join(f"[{n}] {title} — {url}" for n, title, url in sources)
 
         prompt = f"""You are a concise research assistant operating under a strict token budget.
 
 Sub-questions identified:
 {chr(10).join(f"- {q}" for q in subquestions)}
+
+Numbered sources available for citation:
+{source_list}
 
 Evidence retrieved (compressed to fit within {self.config.max_context_tokens} tokens):
 {context_block}
@@ -118,7 +133,7 @@ Evidence retrieved (compressed to fit within {self.config.max_context_tokens} to
 Past session memory:
 {memory_block}
 
-Answer the following question in 3-5 paragraphs. Be direct, cite the sources where relevant, and flag any gaps in the evidence.
+Answer the following question in 3-5 paragraphs. Cite sources using [N] notation. Flag any gaps in the evidence.
 
 Question: {question}"""
 
@@ -127,6 +142,12 @@ Question: {question}"""
                 model="models/gemini-2.5-flash",
                 contents=prompt,
             )
-            return response.text or "No answer generated."
+            answer = response.text or "No answer generated."
         except Exception as exc:
             return f"Synthesis failed: {exc}"
+
+        # Append the source list so the reader can look up any citation
+        reference_block = "\n\n---\n**Sources**\n" + "\n".join(
+            f"[{n}] [{title}]({url})" for n, title, url in sources
+        )
+        return answer + reference_block

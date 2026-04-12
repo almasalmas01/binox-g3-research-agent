@@ -21,12 +21,16 @@ class ResearchAgent:
         self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
     def answer(self, question: str) -> QueryResult:
+        question = question.strip()
+        if not question:
+            raise ValueError("Question must not be empty.")
+
         subquestions = self._decompose_question(question)
         memory_used = self.memory.load_recent(self.config.max_memory_tokens)
 
         retrieved = self._search_unique(subquestions)
-        compressed_context, context_tokens_used = self._compress_with_budget(retrieved, memory_used)
-        answer = self._synthesize(question, subquestions, compressed_context, memory_used, retrieved)
+        compressed_context, context_tokens_used, context_sources = self._compress_with_budget(retrieved, memory_used)
+        answer = self._synthesize(question, subquestions, compressed_context, memory_used, context_sources)
 
         first_line = answer.splitlines()[0] if answer.strip() else question
         self.memory.append(question, first_line)
@@ -52,17 +56,16 @@ Question: {question}"""
 
         try:
             response = self.client.models.generate_content(
-                model="models/gemini-2.5-flash",
+                model=self.config.model,
                 contents=prompt,
             )
-            text = response.text.strip()
-            # Strip markdown code fences if present
+            text = (response.text or "").strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
             subquestions = json.loads(text.strip())
-            if isinstance(subquestions, list) and all(isinstance(q, str) for q in subquestions):
+            if isinstance(subquestions, list) and subquestions and all(isinstance(q, str) for q in subquestions):
                 return subquestions[:4]
         except Exception as exc:
             print(f"[planner] LLM decomposition failed, falling back to regex: {exc}")
@@ -83,9 +86,13 @@ Question: {question}"""
                     best[chunk_id] = result
         return sorted(best.values(), key=lambda r: r.score, reverse=True)
 
-    def _compress_with_budget(self, retrieved: list[RetrievedChunk], memory_used: list[str]) -> tuple[list[str], int]:
-        budget = self.config.max_context_tokens - sum(estimate_tokens(item) for item in memory_used)
+    def _compress_with_budget(
+        self, retrieved: list[RetrievedChunk], memory_used: list[str]
+    ) -> tuple[list[str], int, list[RetrievedChunk]]:
+        memory_cost = sum(estimate_tokens(item) for item in memory_used)
+        budget = max(0, self.config.max_context_tokens - memory_cost)
         compressed: list[str] = []
+        sources: list[RetrievedChunk] = []
         consumed = 0
 
         for result in retrieved:
@@ -94,8 +101,9 @@ Question: {question}"""
             if consumed + size > budget:
                 break
             compressed.append(summary)
+            sources.append(result)
             consumed += size
-        return compressed, consumed
+        return compressed, consumed, sources
 
     def _synthesize(
         self,
@@ -103,15 +111,15 @@ Question: {question}"""
         subquestions: list[str],
         compressed_context: list[str],
         memory_used: list[str],
-        retrieved: list[RetrievedChunk],
+        context_sources: list[RetrievedChunk],
     ) -> str:
         context_block = "\n".join(f"- {item}" for item in compressed_context) or "- No supporting context was retrieved."
         memory_block = "\n".join(f"- {item}" for item in memory_used) or "- No past memory loaded."
 
-        # Build a deduplicated numbered source list for citation
+        # Only number sources that actually appear in the compressed context
         seen: set[str] = set()
         sources: list[tuple[int, str, str]] = []
-        for result in retrieved:
+        for result in context_sources:
             url = result.chunk.source
             if url not in seen:
                 seen.add(url)
@@ -125,7 +133,7 @@ Sub-questions identified:
 {chr(10).join(f"- {q}" for q in subquestions)}
 
 Numbered sources available for citation:
-{source_list}
+{source_list or "- None"}
 
 Evidence retrieved (compressed to fit within {self.config.max_context_tokens} tokens):
 {context_block}
@@ -139,15 +147,16 @@ Question: {question}"""
 
         try:
             response = self.client.models.generate_content(
-                model="models/gemini-2.5-flash",
+                model=self.config.model,
                 contents=prompt,
             )
             answer = response.text or "No answer generated."
         except Exception as exc:
             return f"Synthesis failed: {exc}"
 
-        # Append the source list so the reader can look up any citation
-        reference_block = "\n\n---\n**Sources**\n" + "\n".join(
-            f"[{n}] [{title}]({url})" for n, title, url in sources
-        )
-        return answer + reference_block
+        if sources:
+            reference_block = "\n\n---\n**Sources**\n" + "\n".join(
+                f"[{n}] [{title}]({url})" for n, title, url in sources
+            )
+            answer = answer + reference_block
+        return answer

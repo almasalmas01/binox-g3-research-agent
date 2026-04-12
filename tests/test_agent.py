@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -62,6 +63,25 @@ class MemoryStoreTest(unittest.TestCase):
         total = sum(estimate_tokens(e) for e in entries)
         self.assertLessEqual(total, 50)
 
+    def test_skips_corrupt_lines(self) -> None:
+        self.store.append("Good question", "Good answer")
+        with self.store.path.open("a") as f:
+            f.write("THIS IS NOT JSON\n")
+        self.store.append("Another good question", "Another good answer")
+        entries = self.store.load_recent(max_tokens=1000)
+        self.assertEqual(len(entries), 2)
+
+    def test_ttl_expires_old_entries(self) -> None:
+        import json
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        old_entry = json.dumps({"question": "Old Q", "summary": "Old A", "timestamp": old_ts})
+        with self.store.path.open("a") as f:
+            f.write(old_entry + "\n")
+        self.store.append("Recent question", "Recent answer")
+        entries = self.store.load_recent(max_tokens=1000)
+        self.assertEqual(len(entries), 1)
+        self.assertIn("Recent question", entries[0])
+
 
 class SummarizerTest(unittest.TestCase):
     def _make_result(self, text: str) -> RetrievedChunk:
@@ -85,6 +105,11 @@ class SummarizerTest(unittest.TestCase):
         summary = summarize_chunk(result, max_words=30)
         self.assertIn("Test Title", summary)
 
+    def test_handles_empty_text(self) -> None:
+        result = self._make_result("")
+        summary = summarize_chunk(result, max_words=20)
+        self.assertIsInstance(summary, str)
+
 
 class AgentIntegrationTest(unittest.TestCase):
     def _make_fake_result(self, text: str, idx: int = 0, score: float = 0.9) -> RetrievedChunk:
@@ -96,6 +121,12 @@ class AgentIntegrationTest(unittest.TestCase):
         )
         return RetrievedChunk(chunk=chunk, score=score)
 
+    def _make_agent(self, mock_genai: MagicMock, tmp_path: Path, config: AgentConfig | None = None) -> ResearchAgent:
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = MagicMock(text="Mocked answer.")
+        mock_genai.Client.return_value = mock_client
+        return ResearchAgent(tmp_path, config=config or AgentConfig())
+
     @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
@@ -104,36 +135,53 @@ class AgentIntegrationTest(unittest.TestCase):
             self._make_fake_result("The EV market in this region is growing rapidly with strong demand.", i)
             for i in range(3)
         ]
-        mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = MagicMock(text="Mocked answer.")
-        mock_genai.Client.return_value = mock_client
-
-        agent = ResearchAgent(
-            Path(__file__).resolve().parents[1],
-            config=AgentConfig(max_context_tokens=300, max_memory_tokens=100, top_k_per_subquestion=2),
-        )
-        result = agent.answer("Compare Indonesia and Thailand for EV charging market entry.")
-
-        self.assertLessEqual(result.context_tokens_used, 300)
-        self.assertTrue(result.subquestions)
-        self.assertTrue(result.answer)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = self._make_agent(
+                mock_genai, Path(tmpdir),
+                AgentConfig(max_context_tokens=300, max_memory_tokens=100, top_k_per_subquestion=2),
+            )
+            result = agent.answer("Compare Indonesia and Thailand for EV charging market entry.")
+            self.assertLessEqual(result.context_tokens_used, 300)
+            self.assertTrue(result.subquestions)
+            self.assertTrue(result.answer)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
     def test_agent_saves_to_memory(self, mock_search, mock_genai) -> None:
         mock_search.return_value = [self._make_fake_result("Some relevant text.", 0)]
-        mock_client = MagicMock()
-        mock_client.models.generate_content.return_value = MagicMock(text="Answer line one.\nMore detail.")
-        mock_genai.Client.return_value = mock_client
-
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            (tmp_path / "memory").mkdir()
-            agent = ResearchAgent(tmp_path, config=AgentConfig())
+            agent = self._make_agent(mock_genai, Path(tmpdir))
             agent.answer("What is the state of EV adoption in Asia?")
             entries = agent.memory.load_recent(max_tokens=1000)
             self.assertEqual(len(entries), 1)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
+    @patch("research_agent.agent.genai")
+    @patch("research_agent.agent.search_web")
+    def test_empty_question_raises(self, mock_search, mock_genai) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = self._make_agent(mock_genai, Path(tmpdir))
+            with self.assertRaises(ValueError):
+                agent.answer("   ")
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
+    @patch("research_agent.agent.genai")
+    @patch("research_agent.agent.search_web")
+    def test_decompose_falls_back_on_bad_json(self, mock_search, mock_genai) -> None:
+        mock_search.return_value = [self._make_fake_result("Some text.", 0)]
+        mock_client = MagicMock()
+        # First call (decompose) returns bad JSON; second call (synthesize) returns answer
+        mock_client.models.generate_content.side_effect = [
+            MagicMock(text="not valid json at all"),
+            MagicMock(text="Fallback answer."),
+        ]
+        mock_genai.Client.return_value = mock_client
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = ResearchAgent(Path(tmpdir), config=AgentConfig())
+            result = agent.answer("What is quantum computing?")
+            self.assertTrue(result.subquestions)  # regex fallback produced something
+            self.assertTrue(result.answer)
 
 
 if __name__ == "__main__":

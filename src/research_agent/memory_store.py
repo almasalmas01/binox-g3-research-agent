@@ -32,13 +32,20 @@ class MemoryStore:
         for line in reversed(lines):
             if not line.strip():
                 continue
-            payload = json.loads(line)
-            # Drop entries older than TTL
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # skip corrupt entries
+            # Drop entries older than TTL; use continue not break
+            # so out-of-order entries don't cut off valid newer ones
             ts = payload.get("timestamp")
             if ts:
-                age_days = (now - datetime.fromisoformat(ts)).days
-                if age_days > MEMORY_TTL_DAYS:
-                    break
+                try:
+                    age_days = (now - datetime.fromisoformat(ts)).days
+                    if age_days > MEMORY_TTL_DAYS:
+                        continue
+                except ValueError:
+                    continue  # skip entries with unparseable timestamps
             candidate = f"Past session: {payload['question']} -> {payload['summary']}"
             size = estimate_tokens(candidate)
             if consumed + size > max_tokens:

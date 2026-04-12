@@ -18,7 +18,9 @@ def summarize_chunk(result: RetrievedChunk, max_words: int = 45) -> str:
     if not sentences:
         return clamp_words(f"{header}{text}", max_words)
 
-    query_terms = set(result.matched_terms or extract_terms(text))
+    # Use the actual search query terms for scoring so we pick sentences
+    # that are relevant to what was searched, not just self-referential to the chunk.
+    query_terms = set(extract_terms(result.query)) if result.query else set(extract_terms(text))
 
     # Score all sentences, keep their original index for re-ordering
     scored = sorted(
@@ -34,7 +36,7 @@ def summarize_chunk(result: RetrievedChunk, max_words: int = 45) -> str:
     for idx, sentence in scored:
         word_count = len(sentence.split())
         if word_count > words_remaining:
-            continue  # skip sentences that are too long, try the next one
+            continue
         selected.append((idx, sentence))
         words_remaining -= word_count
         if words_remaining <= 0:

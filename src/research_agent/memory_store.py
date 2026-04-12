@@ -46,7 +46,11 @@ class MemoryStore:
                         continue
                 except ValueError:
                     continue  # skip entries with unparseable timestamps
-            candidate = f"Past session: {payload['question']} -> {payload['summary']}"
+            question = payload.get("question", "")
+            summary = payload.get("summary", "")
+            if not question or not summary:
+                continue
+            candidate = f"Past session: {question} -> {summary}"
             size = estimate_tokens(candidate)
             if consumed + size > max_tokens:
                 break

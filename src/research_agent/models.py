@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)
@@ -18,7 +18,7 @@ class Chunk:
 class RetrievedChunk:
     chunk: Chunk
     score: float
-    matched_terms: list[str] = field(default_factory=list)
+    query: str = ""
 
 
 @dataclass(slots=True)
@@ -36,6 +36,7 @@ class QueryResult:
     subquestions: list[str]
     retrieved: list[RetrievedChunk]
     memory_used: list[str]
+    memory_tokens_used: int
     context_tokens_used: int
+    query_type: str        # "new_topic" | "default" | "follow_up"
     answer: str
-

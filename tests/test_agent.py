@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -5,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from research_agent import AgentConfig, ResearchAgent
+from research_agent.agent import _classify_question
 from research_agent.budget import clamp_words, estimate_tokens
 from research_agent.memory_store import MemoryStore
 from research_agent.models import Chunk, RetrievedChunk
@@ -72,7 +74,6 @@ class MemoryStoreTest(unittest.TestCase):
         self.assertEqual(len(entries), 2)
 
     def test_ttl_expires_old_entries(self) -> None:
-        import json
         old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
         old_entry = json.dumps({"question": "Old Q", "summary": "Old A", "timestamp": old_ts})
         with self.store.path.open("a") as f:
@@ -82,20 +83,43 @@ class MemoryStoreTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertIn("Recent question", entries[0])
 
+    def test_skips_entries_missing_fields(self) -> None:
+        bad_entry = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()})
+        with self.store.path.open("a") as f:
+            f.write(bad_entry + "\n")
+        self.store.append("Good question", "Good answer")
+        entries = self.store.load_recent(max_tokens=1000)
+        self.assertEqual(len(entries), 1)
+
+
+class BudgetClassifierTest(unittest.TestCase):
+    def test_new_topic_when_no_memory(self) -> None:
+        self.assertEqual(_classify_question("What is quantum computing?", []), "new_topic")
+
+    def test_follow_up_on_high_overlap(self) -> None:
+        memory = ["Past session: What are EV charging risks? -> EV charging risks include regulation and safety."]
+        result = _classify_question("What are the main EV charging risks in Asia?", memory)
+        self.assertEqual(result, "follow_up")
+
+    def test_new_topic_on_low_overlap(self) -> None:
+        memory = ["Past session: What is quantum computing? -> Quantum computing uses qubits."]
+        result = _classify_question("What are the EV charging trends in Southeast Asia?", memory)
+        self.assertEqual(result, "new_topic")
+
 
 class SummarizerTest(unittest.TestCase):
-    def _make_result(self, text: str) -> RetrievedChunk:
+    def _make_result(self, text: str, query: str = "risk market") -> RetrievedChunk:
         chunk = Chunk(
             chunk_id="c1", doc_id="d1", title="Test Title",
             source="http://example.com", published_at="2026-01-01",
             text=text, token_estimate=estimate_tokens(text),
         )
-        return RetrievedChunk(chunk=chunk, score=1.0, matched_terms=["risk", "market"])
+        return RetrievedChunk(chunk=chunk, score=1.0, query=query)
 
     def test_summary_within_word_limit(self) -> None:
         result = self._make_result(
             "The market is growing fast. Risks include regulation. Competition is fierce. "
-            "Infrastructure is lacking. Demand is uncertain."
+            "Infrastructure is lacking. Demand is uncertain.",
         )
         summary = summarize_chunk(result, max_words=20)
         self.assertLessEqual(len(summary.split()), 21)
@@ -110,16 +134,30 @@ class SummarizerTest(unittest.TestCase):
         summary = summarize_chunk(result, max_words=20)
         self.assertIsInstance(summary, str)
 
+    def test_uses_query_terms_for_scoring(self) -> None:
+        # Sentence matching the query should be preferred
+        result = self._make_result(
+            "Unrelated sentence about weather. The market risk is high in this region.",
+            query="market risk",
+        )
+        summary = summarize_chunk(result, max_words=30)
+        self.assertIn("market risk", summary.lower())
+
 
 class AgentIntegrationTest(unittest.TestCase):
-    def _make_fake_result(self, text: str, idx: int = 0, score: float = 0.9) -> RetrievedChunk:
+    def _make_fake_result(self, text: str, url: str = "http://example.com", score: float = 0.9, query: str = "test") -> RetrievedChunk:
+        import hashlib
+        stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
         chunk = Chunk(
-            chunk_id=f"web-fake-{idx}", doc_id=f"http://example.com/{idx}",
-            title=f"Source {idx}", source=f"http://example.com/{idx}",
-            published_at="2026-01-01", text=text,
+            chunk_id=f"web-{stable_id}",
+            doc_id=url,
+            title=f"Source at {url}",
+            source=url,
+            published_at="2026-01-01",
+            text=text,
             token_estimate=estimate_tokens(text),
         )
-        return RetrievedChunk(chunk=chunk, score=score)
+        return RetrievedChunk(chunk=chunk, score=score, query=query)
 
     def _make_agent(self, mock_genai: MagicMock, tmp_path: Path, config: AgentConfig | None = None) -> ResearchAgent:
         mock_client = MagicMock()
@@ -132,7 +170,7 @@ class AgentIntegrationTest(unittest.TestCase):
     @patch("research_agent.agent.search_web")
     def test_agent_respects_context_budget(self, mock_search, mock_genai) -> None:
         mock_search.return_value = [
-            self._make_fake_result("The EV market in this region is growing rapidly with strong demand.", i)
+            self._make_fake_result("The EV market in this region is growing rapidly with strong demand.", f"http://example.com/{i}")
             for i in range(3)
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -144,12 +182,13 @@ class AgentIntegrationTest(unittest.TestCase):
             self.assertLessEqual(result.context_tokens_used, 300)
             self.assertTrue(result.subquestions)
             self.assertTrue(result.answer)
+            self.assertIn(result.query_type, ("new_topic", "default", "follow_up"))
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
     def test_agent_saves_to_memory(self, mock_search, mock_genai) -> None:
-        mock_search.return_value = [self._make_fake_result("Some relevant text.", 0)]
+        mock_search.return_value = [self._make_fake_result("Some relevant text.")]
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = self._make_agent(mock_genai, Path(tmpdir))
             agent.answer("What is the state of EV adoption in Asia?")
@@ -169,9 +208,8 @@ class AgentIntegrationTest(unittest.TestCase):
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
     def test_decompose_falls_back_on_bad_json(self, mock_search, mock_genai) -> None:
-        mock_search.return_value = [self._make_fake_result("Some text.", 0)]
+        mock_search.return_value = [self._make_fake_result("Some text.")]
         mock_client = MagicMock()
-        # First call (decompose) returns bad JSON; second call (synthesize) returns answer
         mock_client.models.generate_content.side_effect = [
             MagicMock(text="not valid json at all"),
             MagicMock(text="Fallback answer."),
@@ -180,8 +218,24 @@ class AgentIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             agent = ResearchAgent(Path(tmpdir), config=AgentConfig())
             result = agent.answer("What is quantum computing?")
-            self.assertTrue(result.subquestions)  # regex fallback produced something
+            self.assertTrue(result.subquestions)
             self.assertTrue(result.answer)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
+    @patch("research_agent.agent.genai")
+    @patch("research_agent.agent.search_web")
+    def test_deduplication_across_subquestions(self, mock_search, mock_genai) -> None:
+        # Same URL returned by two different sub-question searches
+        same_result = self._make_fake_result("Shared content.", url="http://shared.com")
+        mock_search.side_effect = [
+            [same_result],
+            [same_result, self._make_fake_result("Unique content.", url="http://unique.com")],
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = self._make_agent(mock_genai, Path(tmpdir))
+            result = agent.answer("Compare X and Y")
+            urls = [r.chunk.source for r in result.retrieved]
+            self.assertEqual(len(urls), len(set(urls)), "Duplicate URLs found in retrieved results")
 
 
 if __name__ == "__main__":

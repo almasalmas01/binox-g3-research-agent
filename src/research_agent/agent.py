@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from google import genai
@@ -9,9 +10,17 @@ from google import genai
 from .budget import estimate_tokens
 from .memory_store import MemoryStore
 from .models import AgentConfig, QueryResult, RetrievedChunk
-from .planner import split_question
+from .planner import extract_terms, split_question
 from .search import search_web
 from .summarizer import summarize_chunk
+
+# Memory budget tiers based on question novelty
+_BUDGET_TIERS: dict[str, tuple[int, int]] = {
+    # query_type  -> (memory_tokens, context_tokens)
+    "new_topic":  (200,  1600),
+    "default":    (600,  1200),
+    "follow_up":  (900,   900),
+}
 
 
 class ResearchAgent:
@@ -26,13 +35,26 @@ class ResearchAgent:
             raise ValueError("Question must not be empty.")
 
         subquestions = self._decompose_question(question)
-        memory_used = self.memory.load_recent(self.config.max_memory_tokens)
+
+        # Classify the question to determine budget split
+        raw_memory = self.memory.load_recent(self.config.max_memory_tokens)
+        query_type = _classify_question(question, raw_memory)
+        memory_budget, _ = _BUDGET_TIERS[query_type]
+
+        # Re-load memory with the dynamic budget
+        memory_used = self.memory.load_recent(memory_budget)
+        memory_tokens_used = sum(estimate_tokens(m) for m in memory_used)
 
         retrieved = self._search_unique(subquestions)
-        compressed_context, context_tokens_used, context_sources = self._compress_with_budget(retrieved, memory_used)
+        if not retrieved:
+            print("[agent] warning: no results retrieved for any sub-question.")
+
+        compressed_context, context_tokens_used, context_sources = self._compress_with_budget(
+            retrieved, memory_tokens_used
+        )
         answer = self._synthesize(question, subquestions, compressed_context, memory_used, context_sources)
 
-        first_line = answer.splitlines()[0] if answer.strip() else question
+        first_line = _strip_markdown(answer.splitlines()[0]) if answer.strip() else question
         self.memory.append(question, first_line)
 
         return QueryResult(
@@ -40,7 +62,9 @@ class ResearchAgent:
             subquestions=subquestions,
             retrieved=retrieved,
             memory_used=memory_used,
+            memory_tokens_used=memory_tokens_used,
             context_tokens_used=context_tokens_used,
+            query_type=query_type,
             answer=answer,
         )
 
@@ -87,10 +111,9 @@ Question: {question}"""
         return sorted(best.values(), key=lambda r: r.score, reverse=True)
 
     def _compress_with_budget(
-        self, retrieved: list[RetrievedChunk], memory_used: list[str]
+        self, retrieved: list[RetrievedChunk], memory_tokens_used: int
     ) -> tuple[list[str], int, list[RetrievedChunk]]:
-        memory_cost = sum(estimate_tokens(item) for item in memory_used)
-        budget = max(0, self.config.max_context_tokens - memory_cost)
+        budget = max(0, self.config.max_context_tokens - memory_tokens_used)
         compressed: list[str] = []
         sources: list[RetrievedChunk] = []
         consumed = 0
@@ -114,9 +137,8 @@ Question: {question}"""
         context_sources: list[RetrievedChunk],
     ) -> str:
         context_block = "\n".join(f"- {item}" for item in compressed_context) or "- No supporting context was retrieved."
-        memory_block = "\n".join(f"- {item}" for item in memory_used) or "- No past memory loaded."
+        memory_block = "\n".join(f"- {item}" for item in memory_used) if memory_used else None
 
-        # Only number sources that actually appear in the compressed context
         seen: set[str] = set()
         sources: list[tuple[int, str, str]] = []
         for result in context_sources:
@@ -126,6 +148,7 @@ Question: {question}"""
                 sources.append((len(sources) + 1, result.chunk.title, url))
 
         source_list = "\n".join(f"[{n}] {title} — {url}" for n, title, url in sources)
+        memory_section = f"\nPast session memory:\n{memory_block}\n" if memory_block else ""
 
         prompt = f"""You are a concise research assistant operating under a strict token budget.
 
@@ -137,10 +160,7 @@ Numbered sources available for citation:
 
 Evidence retrieved (compressed to fit within {self.config.max_context_tokens} tokens):
 {context_block}
-
-Past session memory:
-{memory_block}
-
+{memory_section}
 Answer the following question in 3-5 paragraphs. Cite sources using [N] notation. Flag any gaps in the evidence.
 
 Question: {question}"""
@@ -160,3 +180,41 @@ Question: {question}"""
             )
             answer = answer + reference_block
         return answer
+
+
+def _classify_question(question: str, memory_entries: list[str]) -> str:
+    """
+    Classify the question as 'new_topic', 'default', or 'follow_up'
+    by measuring term overlap between the question and recent memory entries.
+    This drives dynamic budget allocation.
+    """
+    if not memory_entries:
+        return "new_topic"
+
+    question_terms = set(extract_terms(question))
+    if not question_terms:
+        return "default"
+
+    best_overlap = 0.0
+    for entry in memory_entries:
+        entry_terms = set(extract_terms(entry))
+        if not entry_terms:
+            continue
+        overlap = len(question_terms & entry_terms) / len(question_terms)
+        if overlap > best_overlap:
+            best_overlap = overlap
+
+    if best_overlap >= 0.35:
+        return "follow_up"
+    if best_overlap <= 0.05:
+        return "new_topic"
+    return "default"
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove common markdown tokens so memory summaries are plain text."""
+    text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"#+\s*", "", text)
+    return text.strip()

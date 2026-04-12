@@ -23,11 +23,13 @@ def search_web(query: str, top_k: int = 3) -> list[RetrievedChunk]:
     response = client.search(query=query, max_results=top_k, search_depth="basic")
 
     results: list[RetrievedChunk] = []
-    for idx, result in enumerate(response.get("results", [])):
+    for result in response.get("results", []):
+        url = result.get("url")
+        if not url:
+            continue
         content = result.get("content") or result.get("snippet") or ""
         if not content:
             continue
-        url = result["url"]
         stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
         chunk = Chunk(
             chunk_id=f"web-{stable_id}",
@@ -39,5 +41,5 @@ def search_web(query: str, top_k: int = 3) -> list[RetrievedChunk]:
             token_estimate=estimate_tokens(content),
         )
         score = float(result.get("score") or 0.0)
-        results.append(RetrievedChunk(chunk=chunk, score=score))
+        results.append(RetrievedChunk(chunk=chunk, score=score, query=query))
     return results

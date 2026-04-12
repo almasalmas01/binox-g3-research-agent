@@ -19,6 +19,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _budget_bar(used: int, total: int, width: int = 20) -> str:
+    filled = round(used / total * width) if total > 0 else 0
+    return "█" * filled + "░" * (width - filled)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -37,9 +42,14 @@ def main() -> None:
         agent.memory.path.write_text("", encoding="utf-8")
     result = agent.answer(args.question)
 
+    total = agent.config.max_context_tokens
+    unused = total - result.memory_tokens_used - result.context_tokens_used
+    query_label = {"new_topic": "New topic", "default": "Default", "follow_up": "Follow-up"}.get(result.query_type, result.query_type)
+
     print("SUBQUESTIONS")
     for item in result.subquestions:
         print(f"  - {item}")
+
     print(f"\nSOURCES ({len(result.retrieved)} retrieved)")
     seen_urls: set[str] = set()
     for item in result.retrieved:
@@ -47,7 +57,12 @@ def main() -> None:
         if url not in seen_urls:
             seen_urls.add(url)
             print(f"  - {item.chunk.title[:60]}  [{url}]")
-    print(f"\nCONTEXT TOKENS USED: {result.context_tokens_used} / {agent.config.max_context_tokens}")
+
+    print(f"\n── TOKEN BUDGET ({total}) ── {query_label} ──")
+    print(f"  Memory   [{_budget_bar(result.memory_tokens_used, total)}]  {result.memory_tokens_used:>4} / {total}  ({result.memory_tokens_used / total * 100:4.1f}%)")
+    print(f"  Context  [{_budget_bar(result.context_tokens_used, total)}]  {result.context_tokens_used:>4} / {total}  ({result.context_tokens_used / total * 100:4.1f}%)")
+    print(f"  Unused   [{_budget_bar(unused, total)}]  {unused:>4} / {total}  ({unused / total * 100:4.1f}%)")
+
     print("\nANSWER")
     print(result.answer)
 

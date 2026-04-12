@@ -100,6 +100,36 @@ With a small token budget, the agent can either:
 
 Compression was chosen because broader coverage is more useful than perfect preservation of a single source for most research questions. The compressor scores sentences by overlap with the actual search query terms (not just the document's own vocabulary), ensuring relevance to what was actually searched rather than what the document is broadly about. A `continue`-based loop (not `break`) ensures short sentences later in a document are not discarded just because one long sentence couldn't fit.
 
+## Confidence Scoring
+
+After retrieval the agent computes a 0–100 confidence score before synthesizing the answer:
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| Coverage | 50% | Fraction of sub-questions that returned ≥1 result |
+| Relevance | 35% | Mean Tavily relevance score across all retrieved chunks |
+| Depth | 15% | Retrieved count vs maximum possible (top_k × sub-questions) |
+
+```
+confidence = round((coverage × 0.50 + avg_score × 0.35 + depth × 0.15) × 100)
+```
+
+The score is shown in the CLI as an ASCII bar with a `HIGH / MEDIUM / LOW` label. This makes the agent's uncertainty explicit and machine-readable, which is important for any downstream system that needs to decide whether to trust or re-run a query.
+
+**Evidence gaps** — sub-questions that returned zero sources — are listed separately so the user knows exactly where the agent's knowledge is thin, rather than discovering it only by reading the answer carefully.
+
+## Live Search Progress
+
+The CLI prints each sub-question as it is searched in real time:
+
+```
+  [1/3] Searching: "EV market Indonesia overview"... 3 sources
+  [2/3] Searching: "Thailand EV charging"... 2 sources
+  [3/3] Searching: "Vietnam EV regulations 2025"... no results
+```
+
+This makes retrieval transparent and immediately surfaces failures. The agent never silently swallows a zero-result sub-question.
+
 ## Deduplication
 
 Tavily often returns the same URL for multiple sub-questions. Chunk IDs are derived from `hashlib.md5(url)` — stable regardless of position or order — so the same page is only included once. If the same URL appears across sub-questions, the copy with the higher relevance score wins.
@@ -142,13 +172,14 @@ The submission shows:
 - cost-aware architecture (two API calls per query, bounded search results)
 - adaptive memory strategy (dynamic budget allocation by novelty)
 - two-layer memory design with independent budgets and TTL expiry
-- transparent constraint visualization (budget bar in CLI)
+- transparent constraint visualization (budget bar + confidence bar in CLI)
+- honest uncertainty reporting (confidence score + evidence gaps)
 - evaluation thinking (this document)
 - awareness of failure modes and upgrade paths
 
 ## Self-Assessment
 
-Strong on: architecture clarity, constraint enforcement, dynamic adaptation, reproducibility, honest trade-off documentation, citation transparency.
+Strong on: architecture clarity, constraint enforcement, dynamic adaptation, reproducibility, honest uncertainty reporting (confidence + gaps), citation transparency.
 
 Weak on: answer fluency for highly specific queries, semantic classification (term overlap is a blunt instrument), compression quality for dense documents.
 

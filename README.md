@@ -115,14 +115,24 @@ python -m research_agent.evaluate
 ## Example Output
 
 ```
+  [1/3] Searching: "EV market Indonesia overview"... 3 sources
+  [2/3] Searching: "Thailand EV charging infrastructure"... 3 sources
+  [3/3] Searching: "Vietnam EV adoption statistics"... no results
+
 SUBQUESTIONS
   - EV market Indonesia overview
   - EV charging infrastructure Thailand
-  - Vietnam EV adoption trends
+  - Vietnam EV adoption statistics
 
-SOURCES (6 retrieved)
-  - Indonesia EV Market Report 2025  [https://example.com/...]
-  - Thailand EV charging station data  [https://example.com/...]
+SOURCES (5 retrieved)
+  [0.92] Indonesia EV Market Report 2025  [https://example.com/...]
+  [0.87] Thailand EV charging station data  [https://example.com/...]
+
+EVIDENCE GAPS (1 sub-question with no results)
+  ! Vietnam EV adoption statistics
+
+── CONFIDENCE ── MEDIUM ──
+  Score    [██████████████░░░░░░]   68 / 100
 
 ── TOKEN BUDGET (1800) ── New topic ──
   Memory   [░░░░░░░░░░░░░░░░░░░░]     0 / 1800   (0.0%)
@@ -133,7 +143,7 @@ ANSWER
 Indonesia presents the strongest near-term opportunity for an EV charging
 startup, driven by its large population and government EV incentive programs [1].
 Thailand shows strong infrastructure investment but a more competitive market [2].
-...
+Note: evidence for Vietnam was limited — treat those conclusions with caution.
 
 ---
 **Sources**
@@ -141,7 +151,7 @@ Thailand shows strong infrastructure investment but a more competitive market [2
 [2] [Thailand EV charging station data](https://example.com/...)
 ```
 
-The budget bar shows memory vs context vs unused tokens at a glance, and the query type label tells you which budget tier was selected.
+The output shows every stage of the agent's work: live search progress per sub-question, source relevance scores, evidence gaps where retrieval failed, a confidence score, and the token budget breakdown.
 
 ## Constraints
 

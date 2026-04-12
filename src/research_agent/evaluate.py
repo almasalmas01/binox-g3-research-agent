@@ -31,6 +31,7 @@ def main() -> None:
         total_tokens = 0
         total_sources = 0
         total_time = 0.0
+        total_confidence = 0
         failures = 0
 
         for idx, example in enumerate(questions, start=1):
@@ -50,9 +51,13 @@ def main() -> None:
             total_tokens += result.context_tokens_used
             total_sources += len(result.retrieved)
             total_time += elapsed
+            total_confidence += result.confidence_score
 
             query_label = {"new_topic": "New topic", "default": "Default", "follow_up": "Follow-up"}.get(result.query_type, result.query_type)
-            print(f"Query type: {query_label}")
+            conf_label = "HIGH" if result.confidence_score >= 75 else ("MEDIUM" if result.confidence_score >= 45 else "LOW")
+            print(f"Query type: {query_label}  |  Confidence: {result.confidence_score}/100 ({conf_label})")
+            if result.evidence_gaps:
+                print(f"Evidence gaps: {', '.join(result.evidence_gaps)}")
             print(f"Sub-questions ({len(result.subquestions)}):")
             for q in result.subquestions:
                 print(f"  - {q}")
@@ -78,6 +83,7 @@ def main() -> None:
         if answered > 0:
             print(f"  Total sources:  {total_sources}")
             print(f"  Avg tokens:     {total_tokens // answered} / {config.max_context_tokens}")
+            print(f"  Avg confidence: {total_confidence // answered} / 100")
             print(f"  Total time:     {total_time:.1f}s")
         print("=" * 60)
 

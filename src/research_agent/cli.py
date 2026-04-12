@@ -25,6 +25,19 @@ def _budget_bar(used: int, total: int, width: int = 20) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _confidence_label(score: int) -> str:
+    if score >= 75:
+        return "HIGH"
+    if score >= 45:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _confidence_bar(score: int, width: int = 20) -> str:
+    filled = round(score / 100 * width)
+    return "█" * filled + "░" * (width - filled)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -68,13 +81,15 @@ def main() -> None:
 
 
 def _run_and_print(agent: ResearchAgent, question: str) -> None:
+    print()
     result = agent.answer(question)
 
     total = agent.config.max_context_tokens
     unused = total - result.memory_tokens_used - result.context_tokens_used
     query_label = {"new_topic": "New topic", "default": "Default", "follow_up": "Follow-up"}.get(result.query_type, result.query_type)
+    conf_label = _confidence_label(result.confidence_score)
 
-    print("SUBQUESTIONS")
+    print("\nSUBQUESTIONS")
     for item in result.subquestions:
         print(f"  - {item}")
 
@@ -84,7 +99,15 @@ def _run_and_print(agent: ResearchAgent, question: str) -> None:
         url = item.chunk.source
         if url not in seen_urls:
             seen_urls.add(url)
-            print(f"  - {item.chunk.title[:60]}  [{url}]")
+            print(f"  [{item.score:.2f}] {item.chunk.title[:55]}  [{url}]")
+
+    if result.evidence_gaps:
+        print(f"\nEVIDENCE GAPS ({len(result.evidence_gaps)} sub-question{'s' if len(result.evidence_gaps) != 1 else ''} with no results)")
+        for gap in result.evidence_gaps:
+            print(f"  ! {gap}")
+
+    print(f"\n── CONFIDENCE ── {conf_label} ──")
+    print(f"  Score    [{_confidence_bar(result.confidence_score)}]  {result.confidence_score:>3} / 100")
 
     print(f"\n── TOKEN BUDGET ({total}) ── {query_label} ──")
     print(f"  Memory   [{_budget_bar(result.memory_tokens_used, total)}]  {result.memory_tokens_used:>4} / {total}  ({result.memory_tokens_used / total * 100:4.1f}%)")

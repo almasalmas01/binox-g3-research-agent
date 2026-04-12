@@ -41,3 +41,5 @@ class QueryResult:
     context_tokens_used: int
     query_type: Literal["new_topic", "default", "follow_up"]
     answer: str
+    confidence_score: int          # 0–100, derived from source coverage + relevance
+    evidence_gaps: list[str]       # sub-questions that returned zero results

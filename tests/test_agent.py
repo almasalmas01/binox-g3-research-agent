@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from research_agent import AgentConfig, ResearchAgent
-from research_agent.agent import _classify_question
+from research_agent.agent import _classify_question, _compute_confidence
 from research_agent.budget import clamp_words, estimate_tokens
 from research_agent.memory_store import MemoryStore
 from research_agent.models import Chunk, RetrievedChunk
@@ -145,6 +145,43 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("market risk", summary.lower())
 
 
+class ConfidenceTest(unittest.TestCase):
+    def _make_chunk(self, url: str, score: float) -> RetrievedChunk:
+        stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
+        chunk = Chunk(
+            chunk_id=f"web-{stable_id}", doc_id=url, title="T",
+            source=url, published_at="2026-01-01", text="text", token_estimate=10,
+        )
+        return RetrievedChunk(chunk=chunk, score=score, query="q")
+
+    def test_full_coverage_high_scores_gives_high_confidence(self) -> None:
+        subquestions = ["q1", "q2"]
+        retrieved = [self._make_chunk("http://a.com", 0.9), self._make_chunk("http://b.com", 0.85)]
+        score = _compute_confidence(subquestions, retrieved, evidence_gaps=[])
+        self.assertGreaterEqual(score, 70)
+
+    def test_no_results_gives_zero_confidence(self) -> None:
+        score = _compute_confidence(["q1", "q2"], [], evidence_gaps=["q1", "q2"])
+        self.assertEqual(score, 0)
+
+    def test_partial_gaps_lowers_confidence(self) -> None:
+        subquestions = ["q1", "q2"]
+        retrieved = [self._make_chunk("http://a.com", 0.8)]
+        full = _compute_confidence(subquestions, retrieved, evidence_gaps=[])
+        partial = _compute_confidence(subquestions, retrieved, evidence_gaps=["q2"])
+        self.assertGreater(full, partial)
+
+    def test_score_within_range(self) -> None:
+        subquestions = ["q1"]
+        retrieved = [self._make_chunk("http://x.com", 0.5)]
+        score = _compute_confidence(subquestions, retrieved, evidence_gaps=[])
+        self.assertGreaterEqual(score, 0)
+        self.assertLessEqual(score, 100)
+
+    def test_empty_subquestions_returns_zero(self) -> None:
+        self.assertEqual(_compute_confidence([], [], []), 0)
+
+
 class AgentIntegrationTest(unittest.TestCase):
     def _make_fake_result(self, text: str, url: str = "http://example.com", score: float = 0.9, query: str = "test") -> RetrievedChunk:
         stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
@@ -183,6 +220,9 @@ class AgentIntegrationTest(unittest.TestCase):
             self.assertTrue(result.subquestions)
             self.assertTrue(result.answer)
             self.assertIn(result.query_type, ("new_topic", "default", "follow_up"))
+            self.assertGreaterEqual(result.confidence_score, 0)
+            self.assertLessEqual(result.confidence_score, 100)
+            self.assertIsInstance(result.evidence_gaps, list)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
     @patch("research_agent.agent.genai")

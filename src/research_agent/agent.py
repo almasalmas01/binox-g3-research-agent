@@ -45,7 +45,7 @@ class ResearchAgent:
         memory_used = self.memory.load_recent(memory_budget)
         memory_tokens_used = sum(estimate_tokens(m) for m in memory_used)
 
-        retrieved = self._search_unique(subquestions)
+        retrieved, evidence_gaps = self._search_unique(subquestions)
         if not retrieved:
             print("[agent] warning: no results retrieved for any sub-question.")
 
@@ -53,6 +53,7 @@ class ResearchAgent:
             retrieved, memory_tokens_used
         )
         answer = self._synthesize(question, subquestions, compressed_context, memory_used, context_sources, query_type)
+        confidence_score = _compute_confidence(subquestions, retrieved, evidence_gaps)
 
         first_line = _strip_markdown(answer.splitlines()[0]) if answer.strip() else question
         self.memory.append(question, first_line)
@@ -66,6 +67,8 @@ class ResearchAgent:
             context_tokens_used=context_tokens_used,
             query_type=query_type,
             answer=answer,
+            confidence_score=confidence_score,
+            evidence_gaps=evidence_gaps,
         )
 
     def _decompose_question(self, question: str) -> list[str]:
@@ -96,19 +99,27 @@ Question: {question}"""
 
         return split_question(question)
 
-    def _search_unique(self, subquestions: list[str]) -> list[RetrievedChunk]:
+    def _search_unique(self, subquestions: list[str]) -> tuple[list[RetrievedChunk], list[str]]:
         best: dict[str, RetrievedChunk] = {}
-        for subquestion in subquestions:
+        evidence_gaps: list[str] = []
+        total = len(subquestions)
+        for idx, subquestion in enumerate(subquestions, start=1):
+            print(f"  [{idx}/{total}] Searching: \"{subquestion}\"...", end=" ", flush=True)
             try:
                 results = search_web(subquestion, self.config.top_k_per_subquestion)
             except Exception as exc:
-                print(f"[search] warning: search failed for '{subquestion}': {exc}")
+                print(f"error ({exc})")
                 results = []
-            for result in results:
-                chunk_id = result.chunk.chunk_id
-                if chunk_id not in best or result.score > best[chunk_id].score:
-                    best[chunk_id] = result
-        return sorted(best.values(), key=lambda r: r.score, reverse=True)
+            if not results:
+                print("no results")
+                evidence_gaps.append(subquestion)
+            else:
+                print(f"{len(results)} source{'s' if len(results) != 1 else ''}")
+                for result in results:
+                    chunk_id = result.chunk.chunk_id
+                    if chunk_id not in best or result.score > best[chunk_id].score:
+                        best[chunk_id] = result
+        return sorted(best.values(), key=lambda r: r.score, reverse=True), evidence_gaps
 
     def _compress_with_budget(
         self, retrieved: list[RetrievedChunk], memory_tokens_used: int
@@ -222,6 +233,37 @@ def _classify_question(question: str, memory_entries: list[str]) -> str:
     if best_overlap <= 0.05:
         return "new_topic"
     return "default"
+
+
+def _compute_confidence(
+    subquestions: list[str],
+    retrieved: list[RetrievedChunk],
+    evidence_gaps: list[str],
+) -> int:
+    """
+    Compute a 0–100 confidence score based on three factors:
+    - Coverage: fraction of sub-questions that returned at least one result (50%)
+    - Relevance: mean Tavily relevance score of retrieved chunks (35%)
+    - Depth: how full the result set is relative to the maximum possible (15%)
+    """
+    if not subquestions:
+        return 0
+
+    coverage = 1.0 - len(evidence_gaps) / len(subquestions)
+
+    if retrieved:
+        avg_score = sum(r.score for r in retrieved) / len(retrieved)
+        # Tavily scores are typically 0.0–1.0; clamp defensively
+        avg_score = min(max(avg_score, 0.0), 1.0)
+    else:
+        avg_score = 0.0
+
+    # How many unique sources did we get relative to what we asked for?
+    max_possible = len(subquestions) * 3  # top_k_per_subquestion default
+    depth = min(len(retrieved) / max_possible, 1.0) if max_possible > 0 else 0.0
+
+    raw = coverage * 0.50 + avg_score * 0.35 + depth * 0.15
+    return round(raw * 100)
 
 
 def _strip_markdown(text: str) -> str:

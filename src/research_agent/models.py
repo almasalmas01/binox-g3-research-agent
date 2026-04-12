@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(slots=True)
@@ -38,5 +39,5 @@ class QueryResult:
     memory_used: list[str]
     memory_tokens_used: int
     context_tokens_used: int
-    query_type: str        # "new_topic" | "default" | "follow_up"
+    query_type: Literal["new_topic", "default", "follow_up"]
     answer: str

@@ -52,7 +52,7 @@ class ResearchAgent:
         compressed_context, context_tokens_used, context_sources = self._compress_with_budget(
             retrieved, memory_tokens_used
         )
-        answer = self._synthesize(question, subquestions, compressed_context, memory_used, context_sources)
+        answer = self._synthesize(question, subquestions, compressed_context, memory_used, context_sources, query_type)
 
         first_line = _strip_markdown(answer.splitlines()[0]) if answer.strip() else question
         self.memory.append(question, first_line)
@@ -135,6 +135,7 @@ Question: {question}"""
         compressed_context: list[str],
         memory_used: list[str],
         context_sources: list[RetrievedChunk],
+        query_type: str = "default",
     ) -> str:
         context_block = "\n".join(f"- {item}" for item in compressed_context) or "- No supporting context was retrieved."
         memory_block = "\n".join(f"- {item}" for item in memory_used) if memory_used else None
@@ -150,7 +151,19 @@ Question: {question}"""
         source_list = "\n".join(f"[{n}] {title} — {url}" for n, title, url in sources)
         memory_section = f"\nPast session memory:\n{memory_block}\n" if memory_block else ""
 
+        query_type_instructions = {
+            "follow_up": "This is a FOLLOW-UP question — the user has asked about this topic before. "
+                         "Weight information from past session memory heavily and build on prior context rather than repeating it.",
+            "new_topic": "This is a NEW TOPIC the user has not asked about before. "
+                         "Focus entirely on the retrieved evidence; do not speculate about prior context.",
+            "default":   "This question has some overlap with past sessions. "
+                         "Blend retrieved evidence with any relevant prior context.",
+        }
+        query_instruction = query_type_instructions.get(query_type, "")
+
         prompt = f"""You are a concise research assistant operating under a strict token budget.
+
+{query_instruction}
 
 Sub-questions identified:
 {chr(10).join(f"- {q}" for q in subquestions)}

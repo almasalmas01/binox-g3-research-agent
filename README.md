@@ -8,39 +8,43 @@ A research agent that answers any complex question using live web search, while 
 User question
      │
      ▼
- split_question()          ← breaks into sub-questions (regex, no LLM)
+ Gemini (decompose)        ← LLM breaks question into 2-4 sub-questions
+     │  (regex fallback on failure)
+     ▼
+ classify_question()       ← term overlap → new_topic / default / follow_up
+     │
+     ▼
+ dynamic budget split      ← memory vs context allocation selected per query
      │
      ▼
  search_web() × N          ← Tavily live web search per sub-question
      │
      ▼
- compress_with_budget()    ← 1,800 token cap enforced here
+ compress_with_budget()    ← multi-sentence compression within token cap
      │
      ▼
- load_recent_memory()      ← 600 token cap from past sessions
+ Gemini (synthesize)       ← answer with numbered [N] citations + source list
      │
      ▼
- Gemini 2.5 Flash          ← single LLM call for synthesis
+ save to memory.jsonl      ← persists Q&A, expires after 7 days
      │
      ▼
- save to memory.jsonl      ← persists Q&A for future sessions
-     │
-     ▼
- Answer printed
+ Answer + budget bar printed
 ```
 
-The key design choice: **one LLM call per query**. Everything else — decomposition, retrieval, compression, budget enforcement — is deterministic Python. This keeps costs predictable and the system fully inspectable.
+The agent uses two LLM calls per query: one fast decomposition call and one synthesis call. Everything between them — retrieval, deduplication, compression, budget enforcement — is deterministic Python.
 
 ## Memory Architecture
 
-Two separate token budgets run in parallel:
+Two separate token budgets run in parallel, with the split chosen dynamically based on how novel the question is:
 
-| Layer | What it holds | Token cap |
-|---|---|---|
-| Working context | Compressed web search results | 1,200 tokens (1,800 − 600) |
-| Episodic memory | Past Q&A pairs from `session_memory.jsonl` | 600 tokens |
+| Query type | Memory | Context | Triggered when |
+|---|---|---|---|
+| New topic | 200 tokens | 1,600 tokens | No prior sessions or < 5% term overlap |
+| Default | 600 tokens | 1,200 tokens | 5–35% overlap with memory |
+| Follow-up | 900 tokens | 900 tokens | ≥ 35% overlap — user is continuing a prior thread |
 
-The episodic budget is carved out first, so past sessions can never crowd out fresh evidence. Raw web results are never passed to the LLM — each result is compressed to its single most relevant sentence before being packed into context.
+The episodic budget is always carved out first. Past sessions expire after 7 days (TTL). Raw web results are never passed to the LLM — each result is compressed to its highest-scoring sentences using query-term overlap before being packed into context.
 
 ## Project Structure
 
@@ -67,7 +71,7 @@ binox-g3-research-agent/
 **Requirements**: Python 3.11+
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/almasalmas01/binox-g3-research-agent
 cd binox-g3-research-agent
 
 python3 -m venv .venv
@@ -98,6 +102,9 @@ python -m research_agent.cli "Compare the EV markets in Indonesia, Thailand, and
 # Clear episodic memory before a fresh session
 python -m research_agent.cli --reset-memory "What is the current state of quantum computing?"
 
+# Start an interactive multi-turn session (memory persists between questions)
+python -m research_agent.cli --interactive
+
 # See example questions
 python -m research_agent.cli --examples
 
@@ -109,29 +116,43 @@ python -m research_agent.evaluate
 
 ```
 SUBQUESTIONS
-- EV market Indonesia
-- EV market Thailand
-- EV market Vietnam
+  - EV market Indonesia overview
+  - EV charging infrastructure Thailand
+  - Vietnam EV adoption trends
 
-CONTEXT TOKENS USED
-412
+SOURCES (6 retrieved)
+  - Indonesia EV Market Report 2025  [https://example.com/...]
+  - Thailand EV charging station data  [https://example.com/...]
+
+── TOKEN BUDGET (1800) ── New topic ──
+  Memory   [░░░░░░░░░░░░░░░░░░░░]     0 / 1800   (0.0%)
+  Context  [████████████░░░░░░░░]  1080 / 1800  (60.0%)
+  Unused   [████████░░░░░░░░░░░░]   720 / 1800  (40.0%)
 
 ANSWER
-Indonesia presents the strongest near-term opportunity for an EV charging startup...
-[Gemini-synthesized answer with source citations and gap analysis]
+Indonesia presents the strongest near-term opportunity for an EV charging
+startup, driven by its large population and government EV incentive programs [1].
+Thailand shows strong infrastructure investment but a more competitive market [2].
+...
+
+---
+**Sources**
+[1] [Indonesia EV Market Report 2025](https://example.com/...)
+[2] [Thailand EV charging station data](https://example.com/...)
 ```
 
-The CLI always prints the sub-questions and token count, making the constraint system visible.
+The budget bar shows memory vs context vs unused tokens at a glance, and the query type label tells you which budget tier was selected.
 
 ## Constraints
 
 Defined in `src/research_agent/models.py` (`AgentConfig`):
 
 ```python
-max_context_tokens: int = 1800       # total context budget per query
-max_memory_tokens: int = 600         # reserved for episodic memory
+max_context_tokens: int = 1800       # total token budget per query
+max_memory_tokens: int = 600         # default memory cap (overridden by dynamic allocation)
 max_chunk_summary_tokens: int = 120  # per-result compression target
 top_k_per_subquestion: int = 3       # web results fetched per sub-question
+model: str = "models/gemini-2.5-flash"
 ```
 
 These can be overridden by passing a custom `AgentConfig` to `ResearchAgent`.

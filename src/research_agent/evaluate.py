@@ -51,6 +51,8 @@ def main() -> None:
             total_sources += len(result.retrieved)
             total_time += elapsed
 
+            query_label = {"new_topic": "New topic", "default": "Default", "follow_up": "Follow-up"}.get(result.query_type, result.query_type)
+            print(f"Query type: {query_label}")
             print(f"Sub-questions ({len(result.subquestions)}):")
             for q in result.subquestions:
                 print(f"  - {q}")

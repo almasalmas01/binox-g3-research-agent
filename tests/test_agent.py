@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -146,7 +147,6 @@ class SummarizerTest(unittest.TestCase):
 
 class AgentIntegrationTest(unittest.TestCase):
     def _make_fake_result(self, text: str, url: str = "http://example.com", score: float = 0.9, query: str = "test") -> RetrievedChunk:
-        import hashlib
         stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
         chunk = Chunk(
             chunk_id=f"web-{stable_id}",

@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("question", nargs="?", help="Research question to answer.")
     parser.add_argument("--examples", action="store_true", help="Print bundled example questions.")
     parser.add_argument("--reset-memory", action="store_true", help="Clear episodic memory before answering.")
+    parser.add_argument("--interactive", "-i", action="store_true", help="Start an interactive multi-turn session.")
     return parser
 
 
@@ -34,13 +35,40 @@ def main() -> None:
         print(json.dumps(payload, indent=2))
         return
 
+    if args.interactive:
+        agent = ResearchAgent(project_root)
+        if args.reset_memory:
+            agent.memory.path.write_text("", encoding="utf-8")
+        print("Interactive research session. Type 'quit' or 'exit' to stop, '--reset' to clear memory.\n")
+        while True:
+            try:
+                question = input("Question: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if question.lower() in ("quit", "exit"):
+                break
+            if question == "--reset":
+                agent.memory.path.write_text("", encoding="utf-8")
+                print("[Memory cleared]\n")
+                continue
+            if not question:
+                continue
+            _run_and_print(agent, question)
+            print()
+        return
+
     if not args.question:
-        parser.error("Provide a research question or use --examples.")
+        parser.error("Provide a research question, use --examples, or use --interactive.")
 
     agent = ResearchAgent(project_root)
     if args.reset_memory:
         agent.memory.path.write_text("", encoding="utf-8")
-    result = agent.answer(args.question)
+    _run_and_print(agent, args.question)
+
+
+def _run_and_print(agent: ResearchAgent, question: str) -> None:
+    result = agent.answer(question)
 
     total = agent.config.max_context_tokens
     unused = total - result.memory_tokens_used - result.context_tokens_used

@@ -6,7 +6,7 @@ import os
 from tavily import TavilyClient
 
 from .budget import estimate_tokens
-from .models import Chunk
+from .models import Chunk, RetrievedChunk
 
 _client: TavilyClient | None = None
 
@@ -18,26 +18,26 @@ def _get_client() -> TavilyClient:
     return _client
 
 
-def search_web(query: str, top_k: int = 3) -> list[Chunk]:
+def search_web(query: str, top_k: int = 3) -> list[RetrievedChunk]:
     client = _get_client()
     response = client.search(query=query, max_results=top_k, search_depth="basic")
 
-    chunks: list[Chunk] = []
+    results: list[RetrievedChunk] = []
     for idx, result in enumerate(response.get("results", [])):
         content = result.get("content") or result.get("snippet") or ""
         if not content:
             continue
         url = result["url"]
         stable_id = hashlib.md5(url.encode()).hexdigest()[:12]
-        chunks.append(
-            Chunk(
-                chunk_id=f"web-{stable_id}-{idx}",
-                doc_id=url,
-                title=result.get("title") or url,
-                source=url,
-                published_at=result.get("published_date") or "unknown",
-                text=content,
-                token_estimate=estimate_tokens(content),
-            )
+        chunk = Chunk(
+            chunk_id=f"web-{stable_id}-{idx}",
+            doc_id=url,
+            title=result.get("title") or url,
+            source=url,
+            published_at=result.get("published_date") or "unknown",
+            text=content,
+            token_estimate=estimate_tokens(content),
         )
-    return chunks
+        score = float(result.get("score") or 0.0)
+        results.append(RetrievedChunk(chunk=chunk, score=score))
+    return results

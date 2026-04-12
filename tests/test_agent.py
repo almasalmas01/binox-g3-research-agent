@@ -87,20 +87,21 @@ class SummarizerTest(unittest.TestCase):
 
 
 class AgentIntegrationTest(unittest.TestCase):
-    def _make_fake_chunk(self, text: str, idx: int = 0) -> Chunk:
-        return Chunk(
+    def _make_fake_result(self, text: str, idx: int = 0, score: float = 0.9) -> RetrievedChunk:
+        chunk = Chunk(
             chunk_id=f"web-fake-{idx}", doc_id=f"http://example.com/{idx}",
             title=f"Source {idx}", source=f"http://example.com/{idx}",
             published_at="2026-01-01", text=text,
             token_estimate=estimate_tokens(text),
         )
+        return RetrievedChunk(chunk=chunk, score=score)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "fake-key"})
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
     def test_agent_respects_context_budget(self, mock_search, mock_genai) -> None:
         mock_search.return_value = [
-            self._make_fake_chunk("The EV market in this region is growing rapidly with strong demand.", i)
+            self._make_fake_result("The EV market in this region is growing rapidly with strong demand.", i)
             for i in range(3)
         ]
         mock_client = MagicMock()
@@ -121,7 +122,7 @@ class AgentIntegrationTest(unittest.TestCase):
     @patch("research_agent.agent.genai")
     @patch("research_agent.agent.search_web")
     def test_agent_saves_to_memory(self, mock_search, mock_genai) -> None:
-        mock_search.return_value = [self._make_fake_chunk("Some relevant text.", 0)]
+        mock_search.return_value = [self._make_fake_result("Some relevant text.", 0)]
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = MagicMock(text="Answer line one.\nMore detail.")
         mock_genai.Client.return_value = mock_client

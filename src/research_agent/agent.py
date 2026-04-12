@@ -70,20 +70,18 @@ Question: {question}"""
         return split_question(question)
 
     def _search_unique(self, subquestions: list[str]) -> list[RetrievedChunk]:
-        seen_ids: set[str] = set()
-        merged: list[RetrievedChunk] = []
+        best: dict[str, RetrievedChunk] = {}
         for subquestion in subquestions:
             try:
                 results = search_web(subquestion, self.config.top_k_per_subquestion)
             except Exception as exc:
                 print(f"[search] warning: search failed for '{subquestion}': {exc}")
                 results = []
-            for chunk in results:
-                if chunk.chunk_id in seen_ids:
-                    continue
-                seen_ids.add(chunk.chunk_id)
-                merged.append(RetrievedChunk(chunk=chunk, score=1.0))
-        return merged
+            for result in results:
+                chunk_id = result.chunk.chunk_id
+                if chunk_id not in best or result.score > best[chunk_id].score:
+                    best[chunk_id] = result
+        return sorted(best.values(), key=lambda r: r.score, reverse=True)
 
     def _compress_with_budget(self, retrieved: list[RetrievedChunk], memory_used: list[str]) -> tuple[list[str], int]:
         budget = self.config.max_context_tokens - sum(estimate_tokens(item) for item in memory_used)

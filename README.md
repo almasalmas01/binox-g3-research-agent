@@ -2,6 +2,10 @@
 
 A research agent that answers any complex question using live web search, while operating under explicit token budget constraints. Built for the Binox G3 take-home assessment.
 
+## Tech Talk
+
+[View the Tech Talk slides (PDF)](TechTalk_15.pdf).
+
 ## How It Works
 
 ```
